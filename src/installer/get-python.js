@@ -170,7 +170,7 @@ export async function installPortablePython(destinationDir, options = undefined)
 async function getRegistryFile() {
   const systype = proc.getSysType();
   const data = await got(
-    'https://github.com/pioarduino/python-portable/raw/main/python-portable.json',
+    'https://github.com/pioarduino/python-portable/releases/download/v3.11.7/python-portable.json',
     {
       timeout: 60 * 1000,
       retry: { limit: 5 },

@@ -110,6 +110,9 @@ const RELEASE_CACHE_TTL = 300000; // 5 minutes
 let releaseCacheTime = 0;
 let latestTagCacheTime = 0;
 
+// Fallback release tag if latest release has incompatible naming
+const FALLBACK_RELEASE_TAG = '20250818';
+
 // Pre-compiled regex for better performance
 const ASSET_NAME_REGEX = /^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/;
 
@@ -260,14 +263,13 @@ async function getLatestReleaseTag() {
     
     return cachedLatestTag;
   } catch (err) {
-    // Fallback to a known stable release if API fails
-    console.warn('Failed to get latest release tag, using fallback:', err.message);
-    return '20250818';
+    // Fallback to known stable release if API fails
+    return FALLBACK_RELEASE_TAG;
   }
 }
 
 /**
- * Fetch portable Python packages from astral-sh/python-build-standalone with caching
+ * Fetch portable Python packages from astral-sh/python-build-standalone with fallback strategy
  * @returns {Promise<object|null>} Registry file information or null if not found
  */
 async function getRegistryFile() {
@@ -279,42 +281,65 @@ async function getRegistryFile() {
     return selectBestAsset(cachedReleaseData, systype);
   }
   
-  // Get latest release tag dynamically
-  const latestTag = await getLatestReleaseTag();
+  // Try latest release first
+  let selectedAsset = await tryGetRegistryFromRelease(await getLatestReleaseTag(), systype);
   
-  // Load release data from astral-sh/python-build-standalone
-  const releaseData = await got(
-    `https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${latestTag}`,
-    {
-      timeout: 60000,
-      retry: { limit: 5 },
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'PlatformIO-Python-Installer',
-      },
-      https: {
-        certificateAuthority: HTTPS_CA_CERTIFICATES,
-      },
-    },
-  ).json();
-
-  // Cache the release data
-  cachedReleaseData = releaseData;
-  releaseCacheTime = now;
+  // If latest release has no compatible assets, fallback to known working release
+  if (!selectedAsset && cachedLatestTag !== FALLBACK_RELEASE_TAG) {
+    selectedAsset = await tryGetRegistryFromRelease(FALLBACK_RELEASE_TAG, systype);
+  }
   
-  return selectBestAsset(releaseData, systype);
+  return selectedAsset;
 }
 
 /**
- * Select the best asset for the given system type
+ * Try to get registry file from a specific release tag
+ * @param {string} releaseTag - GitHub release tag
+ * @param {string} systype - Target system type
+ * @returns {Promise<object|null>} Best asset or null if none found
+ */
+async function tryGetRegistryFromRelease(releaseTag, systype) {
+  try {
+    // Load release data from astral-sh/python-build-standalone
+    const releaseData = await got(
+      `https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${releaseTag}`,
+      {
+        timeout: 60000,
+        retry: { limit: 5 },
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'PlatformIO-Python-Installer',
+        },
+        https: {
+          certificateAuthority: HTTPS_CA_CERTIFICATES,
+        },
+      },
+    ).json();
+
+    // Cache the release data if this is the first successful request
+    const now = Date.now();
+    if (!cachedReleaseData || (now - releaseCacheTime) >= RELEASE_CACHE_TTL) {
+      cachedReleaseData = releaseData;
+      releaseCacheTime = now;
+    }
+    
+    return selectBestAsset(releaseData, systype);
+  } catch (err) {
+    // If release fetch fails, return null to trigger fallback
+    return null;
+  }
+}
+
+/**
+ * Select the best asset for the given system type with enhanced compatibility detection
  * @param {object} releaseData - GitHub release data
  * @param {string} systype - Target system type
  * @returns {object|null} Best asset or null if none found
  */
 function selectBestAsset(releaseData, systype) {
-  // Filter compatible assets with optimized filtering
+  // Filter compatible assets with multiple naming pattern support
   const compatibleAssets = releaseData.assets.filter(asset => 
-    isAssetCompatible(asset.name, systype)
+    isAssetCompatible(asset.name, systype) || isAssetCompatibleFallback(asset.name, systype)
   );
 
   if (compatibleAssets.length === 0) {
@@ -367,6 +392,42 @@ function parseAssetName(assetName) {
 }
 
 /**
+ * Fallback parsing for alternative naming schemes
+ * @param {string} assetName - Asset filename
+ * @returns {object|null} Parsed metadata or null if parsing failed
+ */
+function parseAssetNameFallback(assetName) {
+  // Alternative regex patterns for different naming conventions
+  const fallbackPatterns = [
+    // Pattern for simplified naming: cpython-3.13.7-linux-x64.tar.gz
+    /^cpython-(\d+\.\d+\.\d+)-([^-]+)-([^.]+)\.(tar\.(?:gz|zst))$/,
+    // Pattern for date-only naming: python-3.13.7-20250818-linux-x64.tar.gz
+    /^python-(\d+\.\d+\.\d+)-(\d+)-([^-]+)-([^.]+)\.(tar\.(?:gz|zst))$/,
+    // Generic Python naming: python-3.13.7-linux-x64.tar.gz
+    /^python-(\d+\.\d+\.\d+)-([^-]+)-([^.]+)\.(tar\.(?:gz|zst))$/,
+  ];
+
+  for (const pattern of fallbackPatterns) {
+    const match = pattern.exec(assetName);
+    if (match) {
+      // Map to standardized format
+      return {
+        pythonVersion: match[1],
+        buildDate: match[2] || 'unknown',
+        arch: match[match.length - 3] || 'unknown',
+        os: match[match.length - 4] || 'unknown',
+        libc: 'unknown',
+        buildVariant: '',
+        packageType: 'install_only',
+        compression: match[match.length - 1],
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Check if asset is compatible with target system (optimized version)
  * @param {string} assetName - Asset filename
  * @param {string} systype - Target system type
@@ -386,7 +447,7 @@ function isAssetCompatible(assetName, systype) {
     return false;
   }
 
-  // Exclude unwanted build variants (case-insensitive for performance)
+  // Exclude unwanted build variants
   const buildVariant = parsed.buildVariant;
   if (buildVariant && (
     buildVariant.includes('freethreaded') || 
@@ -396,7 +457,7 @@ function isAssetCompatible(assetName, systype) {
     return false;
   }
 
-  // System compatibility mapping (optimized lookup)
+  // System compatibility mapping
   const systemMap = getSystemMapping(systype);
   if (!systemMap) {
     return false;
@@ -405,6 +466,42 @@ function isAssetCompatible(assetName, systype) {
   return parsed.arch === systemMap.arch && 
          parsed.os === systemMap.os && 
          parsed.libc.startsWith(systemMap.libc);
+}
+
+/**
+ * Fallback compatibility check for alternative naming schemes
+ * @param {string} assetName - Asset filename
+ * @param {string} systype - Target system type
+ * @returns {boolean} True if compatible
+ */
+function isAssetCompatibleFallback(assetName, systype) {
+  const parsed = parseAssetNameFallback(assetName);
+  if (!parsed) {
+    return false;
+  }
+
+  // Python version check
+  const versionParts = parsed.pythonVersion.split('.');
+  const major = parseInt(versionParts[0], 10);
+  const minor = parseInt(versionParts[1], 10);
+  if (major !== 3 || minor > 13) {
+    return false;
+  }
+
+  // Simple system compatibility check based on common naming patterns
+  const name = assetName.toLowerCase();
+  const compatibilityMap = {
+    'darwin-x64': ['macos', 'darwin', 'osx', 'x86_64'],
+    'darwin-arm64': ['macos', 'darwin', 'osx', 'arm64', 'aarch64'],
+    'linux-x64': ['linux', 'x86_64', 'amd64'],
+    'linux-arm64': ['linux', 'arm64', 'aarch64'],
+    'linux-armv7l': ['linux', 'armv7', 'arm'],
+    'win32-x64': ['windows', 'win', 'x86_64', 'amd64'],
+    'win32-ia32': ['windows', 'win', 'i686', 'x86'],
+  };
+
+  const patterns = compatibilityMap[systype] || [];
+  return patterns.some(pattern => name.includes(pattern));
 }
 
 /**
@@ -434,14 +531,31 @@ function getSystemMapping(systype) {
 }
 
 /**
- * Score assets to prefer the best build variant (performance optimized)
+ * Score assets to prefer the best build variant (enhanced for fallback support)
  * @param {string} assetName - Asset filename
  * @param {string} systype - Target system type
  * @returns {number} Score (higher is better, -1 if incompatible)
  */
 function scoreAsset(assetName, systype) {
-  const parsed = parseAssetName(assetName);
-  if (!parsed || !isAssetCompatible(assetName, systype)) {
+  let parsed = parseAssetName(assetName);
+  let isFallback = false;
+  
+  // Try fallback parsing if primary parsing fails
+  if (!parsed) {
+    parsed = parseAssetNameFallback(assetName);
+    isFallback = true;
+  }
+  
+  if (!parsed) {
+    return -1;
+  }
+
+  // Check compatibility
+  const isCompatible = isFallback ? 
+    isAssetCompatibleFallback(assetName, systype) : 
+    isAssetCompatible(assetName, systype);
+  
+  if (!isCompatible) {
     return -1;
   }
 
@@ -453,6 +567,11 @@ function scoreAsset(assetName, systype) {
 
   // Base score from Python version
   score += major * 10000 + minor * 100 + patch;
+
+  // Prefer primary naming scheme over fallback
+  if (isFallback) {
+    score -= 5000; // Penalty for fallback naming
+  }
 
   // Performance optimization bonuses
   const buildVariant = parsed.buildVariant;
@@ -579,7 +698,7 @@ async function extractTarGz(source, destination) {
   const pipeline = promisify(stream.pipeline);
   
   await pipeline(
-    fs.createReadStream(source, { highWaterMark: 64 * 1024 }), // 64KB chunks for better performance
+    fs.createReadStream(source, { highWaterMark: 64 * 1024 }),
     zlib.createGunzip({ chunkSize: 64 * 1024 }),
     tar.extract({ 
       cwd: destination,

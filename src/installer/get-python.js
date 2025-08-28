@@ -170,8 +170,8 @@ async function verifyFileIntegrity(filePath, expectedSHA) {
 
 /**
  * Search for existing Python executable in system PATH with version validation
- * Only accepts Python versions 3.10 through 3.13
- * @returns {Promise<string|null>} Path to Python executable or null if not found
+ * Only accepts Python versions 3.10 through 3.13. Stops at first valid installation found.
+ * @returns {Promise<string|null>} Path to first valid Python executable or null if not found
  */
 export async function findPythonExecutable() {
   const exenames = proc.IS_WINDOWS ? ['python.exe'] : ['python3', 'python'];
@@ -180,7 +180,7 @@ export async function findPythonExecutable() {
   
   log('info', 'Searching for compatible Python installation (3.10-3.13)');
   
-  // Search through all PATH locations for Python executables
+  // Search through all PATH locations for Python executables with early exit
   for (const location of envPath.split(path.delimiter)) {
     for (const exename of exenames) {
       const executable = path.normalize(path.join(location, exename)).replace(/"/g, '');
@@ -197,7 +197,7 @@ export async function findPythonExecutable() {
     }
   }
   
-  // Check for specific distutils module error
+  // Only reached if no valid Python installation found
   for (const err of errors) {
     if (err.toString().includes('Could not find distutils module')) {
       throw err;
@@ -218,7 +218,7 @@ async function isValidPythonVersion(executable) {
     const { execSync } = require('child_process');
     const output = execSync(`"${executable}" --version`, {
       encoding: 'utf8',
-      timeout: 1000,
+      timeout: 3000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     
@@ -690,7 +690,7 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
     archivePath = path.join(options.predownloadedPackageDir, regfile.name);
     if (await fileExists(archivePath)) {
       log('info', `Using predownloaded package: ${regfile.name}`);
-      
+
       // Verify integrity of predownloaded file if digest is available
       if (regfile.digest && !(await verifyFileIntegrity(archivePath, regfile.digest))) {
         log('warn', 'Predownloaded file failed integrity check, re-downloading');
@@ -701,7 +701,7 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
   }
 
   archivePath = path.join(destinationDir, regfile.name);
-  
+
   // Skip if already downloaded and verified
   if (await fileExists(archivePath)) {
     if (regfile.digest) {
@@ -717,9 +717,9 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
   }
 
   const pipeline = promisify(stream.pipeline);
-  
+
   log('info', `Downloading Python package: ${regfile.name} (${Math.round(regfile.size / 1024 / 1024)}MB)`);
-  
+
   await pipeline(
     got.stream(regfile.download_url, {
       timeout: { request: 60000 },
@@ -730,12 +730,12 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
     }),
     fs.createWriteStream(archivePath)
   );
-  
+
   // Verify download completed successfully
   if (!(await fileExists(archivePath))) {
     throw new Error('Failed to download Python archive');
   }
-  
+
   // Verify file integrity using SHA256 if available
   if (regfile.digest) {
     if (!(await verifyFileIntegrity(archivePath, regfile.digest))) {
@@ -745,7 +745,7 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
   } else {
     log('warn', 'No SHA256 digest available for verification');
   }
-  
+
   return archivePath;
 }
 
@@ -773,7 +773,7 @@ async function extractArchive(source, destination) {
   await fs.promises.mkdir(destination, { recursive: true });
 
   const filename = path.basename(source);
-  
+
   if (filename.endsWith('.tar.zst')) {
     return await extractTarZst(source, destination);
   } else if (filename.endsWith('.tar.gz')) {
@@ -791,7 +791,7 @@ async function extractArchive(source, destination) {
  */
 async function extractTarGz(source, destination) {
   const pipeline = promisify(stream.pipeline);
-  
+
   await pipeline(
     fs.createReadStream(source, { highWaterMark: 64 * 1024 }),
     zlib.createGunzip({ chunkSize: 64 * 1024 }),
@@ -801,7 +801,7 @@ async function extractTarGz(source, destination) {
       preservePaths: false,
     })
   );
-  
+
   return destination;
 }
 
@@ -815,12 +815,12 @@ async function extractTarZst(source, destination) {
   // Read and decompress file using fzstd
   const compressedData = await fs.promises.readFile(source);
   const decompressedData = decompress(compressedData);
-  
+
   // Create memory-based stream for tar extraction
   const decompressedStream = stream.Readable.from(decompressedData);
-  
+
   const pipeline = promisify(stream.pipeline);
-  
+
   await pipeline(
     decompressedStream,
     tar.extract({ 
@@ -829,6 +829,6 @@ async function extractTarZst(source, destination) {
       preservePaths: false,
     })
   );
-  
+
   return destination;
 }

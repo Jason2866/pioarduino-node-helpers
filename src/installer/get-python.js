@@ -16,6 +16,7 @@ import { promisify } from 'util';
 import semver from 'semver';
 import stream from 'stream';
 import zlib from 'zlib';
+import { createHash } from 'crypto';
 import { decompress } from 'fzstd';
 const tar = require('tar');
 
@@ -117,6 +118,57 @@ const FALLBACK_RELEASE_TAG = '20250818';
 const ASSET_NAME_REGEX = /^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/;
 
 /**
+ * Simple logger for minimal output
+ * @param {string} level - Log level (info, warn, error)
+ * @param {string} message - Log message
+ */
+function log(level, message) {
+  const timestamp = new Date().toISOString();
+  console[level](`[${timestamp}] [Python-Installer] ${message}`);
+}
+
+/**
+ * Calculate SHA256 hash of a file
+ * @param {string} filePath - Path to file
+ * @returns {Promise<string>} SHA256 hex digest
+ */
+async function calculateFileSHA256(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+
+    stream.on('error', reject);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+/**
+ * Verify file integrity using SHA256 checksum
+ * @param {string} filePath - Path to downloaded file
+ * @param {string} expectedSHA - Expected SHA256 hash from API
+ * @returns {Promise<boolean>} True if verification passes
+ */
+async function verifyFileIntegrity(filePath, expectedSHA) {
+  try {
+    const actualSHA = await calculateFileSHA256(filePath);
+    const expectedSHAClean = expectedSHA.replace('sha256:', '').toLowerCase();
+    const actualSHAClean = actualSHA.toLowerCase();
+    
+    if (actualSHAClean === expectedSHAClean) {
+      log('info', `File integrity verified: ${path.basename(filePath)}`);
+      return true;
+    } else {
+      log('error', `File integrity check failed: expected ${expectedSHAClean}, got ${actualSHAClean}`);
+      return false;
+    }
+  } catch (err) {
+    log('error', `SHA256 verification failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Search for existing Python executable in system PATH with version validation
  * Only accepts Python versions 3.10 through 3.13
  * @returns {Promise<string|null>} Path to Python executable or null if not found
@@ -126,6 +178,8 @@ export async function findPythonExecutable() {
   const envPath = process.env.PLATFORMIO_PATH || process.env.PATH;
   const errors = [];
   
+  log('info', 'Searching for compatible Python installation (3.10-3.13)');
+  
   // Search through all PATH locations for Python executables
   for (const location of envPath.split(path.delimiter)) {
     for (const exename of exenames) {
@@ -134,10 +188,10 @@ export async function findPythonExecutable() {
         if (fs.existsSync(executable) && 
             (await isValidPythonVersion(executable)) &&
             (await callInstallerScript(executable, ['check', 'python']))) {
+          log('info', `Found compatible Python: ${executable}`);
           return executable;
         }
       } catch (err) {
-        console.warn(executable, err);
         errors.push(err);
       }
     }
@@ -149,6 +203,8 @@ export async function findPythonExecutable() {
       throw err;
     }
   }
+  
+  log('info', 'No compatible system Python found, will install portable Python');
   return null;
 }
 
@@ -203,10 +259,14 @@ async function ensurePythonExeExists(pythonDir) {
  * @returns {Promise<string>} Path to installed Python directory
  */
 export async function installPortablePython(destinationDir, options = undefined) {
+  log('info', 'Starting portable Python installation');
+  
   const registryFile = await getRegistryFile();
   if (!registryFile) {
     throw new Error(`Could not find portable Python for ${proc.getSysType()}`);
   }
+  
+  log('info', `Selected Python package: ${registryFile.name}`);
   
   const archivePath = await downloadRegistryFile(
     registryFile,
@@ -221,12 +281,15 @@ export async function installPortablePython(destinationDir, options = undefined)
   try {
     await fs.promises.rm(destinationDir, { recursive: true, force: true });
   } catch (err) {
-    console.warn(err);
+    // Ignore cleanup errors
   }
   
   // Extract archive and verify Python executable
+  log('info', 'Extracting Python archive');
   await extractArchive(archivePath, destinationDir);
   await ensurePythonExeExists(destinationDir);
+  
+  log('info', `Python installation completed: ${destinationDir}`);
   return destinationDir;
 }
 
@@ -243,6 +306,7 @@ async function getLatestReleaseTag() {
   }
   
   try {
+    log('info', 'Fetching latest release tag from GitHub');
     const latestRelease = await got(
       'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest',
       {
@@ -261,9 +325,11 @@ async function getLatestReleaseTag() {
     cachedLatestTag = latestRelease.tag_name;
     latestTagCacheTime = now;
     
+    log('info', `Using latest release: ${cachedLatestTag}`);
     return cachedLatestTag;
   } catch (err) {
     // Fallback to known stable release if API fails
+    log('warn', `Failed to get latest release, using fallback: ${FALLBACK_RELEASE_TAG}`);
     return FALLBACK_RELEASE_TAG;
   }
 }
@@ -286,6 +352,7 @@ async function getRegistryFile() {
   
   // If latest release has no compatible assets, fallback to known working release
   if (!selectedAsset && cachedLatestTag !== FALLBACK_RELEASE_TAG) {
+    log('warn', 'No compatible assets in latest release, trying fallback release');
     selectedAsset = await tryGetRegistryFromRelease(FALLBACK_RELEASE_TAG, systype);
   }
   
@@ -325,7 +392,7 @@ async function tryGetRegistryFromRelease(releaseTag, systype) {
     
     return selectBestAsset(releaseData, systype);
   } catch (err) {
-    // If release fetch fails, return null to trigger fallback
+    log('warn', `Failed to fetch release ${releaseTag}: ${err.message}`);
     return null;
   }
 }
@@ -364,6 +431,7 @@ function selectBestAsset(releaseData, systype) {
     size: bestAsset.size,
     system: [systype],
     compression: getCompressionType(bestAsset.name),
+    digest: bestAsset.digest || null, // SHA256 checksum from GitHub API
   };
 }
 
@@ -608,7 +676,7 @@ function getCompressionType(filename) {
 }
 
 /**
- * Download registry file with optimized streaming
+ * Download registry file with SHA256 verification
  * @param {object} regfile - Registry file information
  * @param {string} destinationDir - Download destination directory
  * @param {object} options - Optional configuration
@@ -621,19 +689,36 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
   if (options.predownloadedPackageDir) {
     archivePath = path.join(options.predownloadedPackageDir, regfile.name);
     if (await fileExists(archivePath)) {
-      console.info('Using predownloaded package from ' + archivePath);
-      return archivePath;
+      log('info', `Using predownloaded package: ${regfile.name}`);
+      
+      // Verify integrity of predownloaded file if digest is available
+      if (regfile.digest && !(await verifyFileIntegrity(archivePath, regfile.digest))) {
+        log('warn', 'Predownloaded file failed integrity check, re-downloading');
+      } else {
+        return archivePath;
+      }
     }
   }
 
   archivePath = path.join(destinationDir, regfile.name);
   
-  // Skip if already downloaded
+  // Skip if already downloaded and verified
   if (await fileExists(archivePath)) {
-    return archivePath;
+    if (regfile.digest) {
+      if (await verifyFileIntegrity(archivePath, regfile.digest)) {
+        return archivePath;
+      } else {
+        log('warn', 'Existing file failed integrity check, re-downloading');
+        await fs.promises.unlink(archivePath);
+      }
+    } else {
+      return archivePath;
+    }
   }
 
   const pipeline = promisify(stream.pipeline);
+  
+  log('info', `Downloading Python package: ${regfile.name} (${Math.round(regfile.size / 1024 / 1024)}MB)`);
   
   await pipeline(
     got.stream(regfile.download_url, {
@@ -649,6 +734,16 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
   // Verify download completed successfully
   if (!(await fileExists(archivePath))) {
     throw new Error('Failed to download Python archive');
+  }
+  
+  // Verify file integrity using SHA256 if available
+  if (regfile.digest) {
+    if (!(await verifyFileIntegrity(archivePath, regfile.digest))) {
+      await fs.promises.unlink(archivePath);
+      throw new Error('Downloaded file failed SHA256 integrity check');
+    }
+  } else {
+    log('warn', 'No SHA256 digest available for verification');
   }
   
   return archivePath;

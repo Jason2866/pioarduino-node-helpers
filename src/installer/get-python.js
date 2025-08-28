@@ -112,7 +112,8 @@ let releaseCacheTime = 0;
 const ASSET_NAME_REGEX = /^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/;
 
 /**
- * Search for existing Python executable in system PATH
+ * Search for existing Python executable in system PATH with version validation
+ * Only accepts Python versions 3.10 through 3.13
  * @returns {Promise<string|null>} Path to Python executable or null if not found
  */
 export async function findPythonExecutable() {
@@ -125,10 +126,9 @@ export async function findPythonExecutable() {
     for (const exename of exenames) {
       const executable = path.normalize(path.join(location, exename)).replace(/"/g, '');
       try {
-        if (
-          fs.existsSync(executable) &&
-          (await callInstallerScript(executable, ['check', 'python']))
-        ) {
+        if (fs.existsSync(executable) && 
+            (await isValidPythonVersion(executable)) &&
+            (await callInstallerScript(executable, ['check', 'python']))) {
           return executable;
         }
       } catch (err) {
@@ -145,6 +145,30 @@ export async function findPythonExecutable() {
     }
   }
   return null;
+}
+
+/**
+ * Check if Python executable has acceptable version (3.10-3.13)
+ * @param {string} executable - Path to Python executable
+ * @returns {Promise<boolean>} True if version is acceptable
+ */
+async function isValidPythonVersion(executable) {
+  try {
+    const { execSync } = require('child_process');
+    const output = execSync(`"${executable}" --version`, {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    const versionMatch = output.match(/Python (\d+\.\d+\.\d+)/);
+    if (!versionMatch) return false;
+    
+    const version = versionMatch[1];
+    return semver.gte(version, '3.10.0') && semver.lt(version, '3.14.0');
+  } catch {
+    return false;
+  }
 }
 
 /**

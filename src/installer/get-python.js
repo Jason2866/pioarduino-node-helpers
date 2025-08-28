@@ -19,6 +19,18 @@ import stream from 'stream';
 import zlib from 'zlib';
 const tar = require('tar');
 
+// Optional zstandard fallback package for older Node.js versions
+let fzstd;
+try {
+  // Try to import fzstd as fallback for older Node.js versions
+  const fzstdModule = require('fzstd');
+  fzstd = fzstdModule;
+} catch (err) {
+  // fzstd not available - will use native zlib or system command fallback
+  console.warn('fzstd package not available, will try native zstd support or system command');
+}
+
+// Embedded SSL certificates for secure HTTPS connections
 const HTTPS_CA_CERTIFICATES = `
 # Issuer: CN=ISRG Root X1 O=Internet Security Research Group
 # Subject: CN=ISRG Root X1 O=Internet Security Research Group
@@ -102,10 +114,16 @@ jjxDah2nGN59PRbxYvnKkKj9
 -----END CERTIFICATE-----
 `;
 
+/**
+ * Search for existing Python executable in system PATH
+ * @returns {Promise<string|null>} Path to Python executable or null if not found
+ */
 export async function findPythonExecutable() {
   const exenames = proc.IS_WINDOWS ? ['python.exe'] : ['python3', 'python'];
   const envPath = process.env.PLATFORMIO_PATH || process.env.PATH;
   const errors = [];
+  
+  // Search through all PATH locations for Python executables
   for (const location of envPath.split(path.delimiter)) {
     for (const exename of exenames) {
       const executable = path.normalize(path.join(location, exename)).replace(/"/g, '');
@@ -122,6 +140,8 @@ export async function findPythonExecutable() {
       }
     }
   }
+  
+  // Check for specific distutils module error
   for (const err of errors) {
     if (err.toString().includes('Could not find distutils module')) {
       throw err;
@@ -130,6 +150,11 @@ export async function findPythonExecutable() {
   return null;
 }
 
+/**
+ * Verify that Python executable exists in the installed directory
+ * @param {string} pythonDir - Directory containing Python installation
+ * @returns {Promise<boolean>} True if executable exists
+ */
 async function ensurePythonExeExists(pythonDir) {
   const binDir = proc.IS_WINDOWS ? pythonDir : path.join(pythonDir, 'bin');
   for (const name of ['python.exe', 'python3', 'python']) {
@@ -141,11 +166,18 @@ async function ensurePythonExeExists(pythonDir) {
   throw new Error('Python executable does not exist!');
 }
 
+/**
+ * Download and install portable Python distribution
+ * @param {string} destinationDir - Target installation directory
+ * @param {object} options - Optional configuration
+ * @returns {Promise<string>} Path to installed Python directory
+ */
 export async function installPortablePython(destinationDir, options = undefined) {
   const registryFile = await getRegistryFile();
   if (!registryFile) {
     throw new Error(`Could not find portable Python for ${proc.getSysType()}`);
   }
+  
   const archivePath = await downloadRegistryFile(
     registryFile,
     core.getTmpDir(),
@@ -154,70 +186,230 @@ export async function installPortablePython(destinationDir, options = undefined)
   if (!archivePath) {
     throw new Error('Could not download portable Python');
   }
+  
+  // Clean up existing installation
   try {
     await fs.promises.rm(destinationDir, { recursive: true, force: true });
   } catch (err) {
     console.warn(err);
   }
-  await extractTarGz(archivePath, destinationDir);
+  
+  // Extract archive and verify Python executable
+  await extractArchive(archivePath, destinationDir);
   await ensurePythonExeExists(destinationDir);
   return destinationDir;
 }
 
+/**
+ * Fetch portable Python packages from astral-sh/python-build-standalone
+ * @returns {Promise<object|null>} Registry file information or null if not found
+ */
 async function getRegistryFile() {
   const systype = proc.getSysType();
-  const data = await got(
-    'https://github.com/pioarduino/python-portable/releases/download/v3.11.7/python-portable.json',
+  
+  // Load release data from astral-sh/python-build-standalone
+  const releaseData = await got(
+    'https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250818',
     {
       timeout: 60 * 1000,
       retry: { limit: 5 },
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'PlatformIO-Python-Installer',
+      },
       https: {
         certificateAuthority: HTTPS_CA_CERTIFICATES,
       },
     },
   ).json();
-  const versions = data.versions.filter((version) =>
-    isVersionSystemCompatible(version, systype),
-  );
-  let bestVersion = undefined;
-  for (const version of versions) {
-    if (!bestVersion || semver.gt(version.name, bestVersion.name)) {
-      bestVersion = version;
+
+  // Filter compatible assets based on system type and build preferences
+  const compatibleAssets = releaseData.assets.filter((asset) => {
+    return isAssetCompatible(asset.name, systype);
+  });
+
+  if (compatibleAssets.length === 0) {
+    return null;
+  }
+
+  // Select the best Python version and build variant
+  let bestAsset = null;
+  let bestScore = -1;
+
+  for (const asset of compatibleAssets) {
+    const score = scoreAsset(asset.name, systype);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAsset = asset;
     }
   }
-  if (!bestVersion) {
-    return;
+
+  if (!bestAsset) {
+    return null;
   }
-  return bestVersion.files.find((item) => item.system.includes(systype));
+
+  // Convert asset to compatible format
+  return {
+    name: bestAsset.name,
+    download_url: bestAsset.browser_download_url,
+    size: bestAsset.size,
+    system: [systype],
+    compression: getCompressionType(bestAsset.name),
+  };
 }
 
-function isVersionSystemCompatible(version, systype) {
-  // ignore Python >=3.9 on <= Win7
-  try {
-    const originVersion = parseInt(version.name.split('.')[1]);
-    if (
-      proc.IS_WINDOWS &&
-      originVersion >= 30900 &&
-      semver.satisfies(os.release(), '<=6.1')
-    ) {
-      return false;
-    }
-  } catch (err) {
-    console.warn(err);
+/**
+ * Parse asset filename to extract metadata
+ * @param {string} assetName - Asset filename
+ * @returns {object|null} Parsed metadata or null if parsing failed
+ */
+function parseAssetName(assetName) {
+  // Parse asset names like "cpython-3.13.7+20250818-aarch64-apple-darwin-freethreaded+debug-full.tar.zst"
+  const match = assetName.match(/^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/);
+  
+  if (!match) {
+    return null;
   }
 
-  for (const item of version.files) {
-    if (item.system.includes(systype)) {
-      return true;
-    }
-  }
-  return false;
+  return {
+    pythonVersion: match[1],
+    buildDate: match[2],
+    arch: match[3],
+    os: match[4],
+    libc: match[5],
+    buildVariant: match[6] || '',
+    packageType: match[7] || '',
+    compression: match[8],
+  };
 }
 
+/**
+ * Check if asset is compatible with target system
+ * @param {string} assetName - Asset filename
+ * @param {string} systype - Target system type
+ * @returns {boolean} True if compatible
+ */
+function isAssetCompatible(assetName, systype) {
+  const parsed = parseAssetName(assetName);
+  if (!parsed) {
+    return false;
+  }
+
+  // Check Python version support (max 3.13)
+  const [major, minor] = parsed.pythonVersion.split('.').map(Number);
+  if (major !== 3 || minor > 13) {
+    return false;
+  }
+
+  // Exclude unwanted build variants
+  const buildVariant = parsed.buildVariant.toLowerCase();
+  if (buildVariant.includes('freethreaded') || 
+      buildVariant.includes('debug') ||
+      buildVariant.includes('noopt')) {
+    return false;
+  }
+
+  // System compatibility mapping
+  const systemMappings = {
+    'darwin-x64': { arch: 'x86_64', os: 'apple', libc: 'darwin' },
+    'darwin-arm64': { arch: 'aarch64', os: 'apple', libc: 'darwin' },
+    'linux-x64': { arch: 'x86_64', os: 'unknown', libc: 'linux' },
+    'linux-arm64': { arch: 'aarch64', os: 'unknown', libc: 'linux' },
+    'linux-armv7l': { arch: 'armv7', os: 'unknown', libc: 'linux' },
+    'win32-x64': { arch: 'x86_64', os: 'pc', libc: 'windows' },
+    'win32-ia32': { arch: 'i686', os: 'pc', libc: 'windows' },
+  };
+
+  const expected = systemMappings[systype];
+  if (!expected) {
+    return false;
+  }
+
+  return parsed.arch === expected.arch && 
+         parsed.os === expected.os && 
+         parsed.libc.startsWith(expected.libc);
+}
+
+/**
+ * Score assets to prefer the best build variant for the system
+ * @param {string} assetName - Asset filename
+ * @param {string} systype - Target system type
+ * @returns {number} Score (higher is better, -1 if incompatible)
+ */
+function scoreAsset(assetName, systype) {
+  const parsed = parseAssetName(assetName);
+  if (!parsed || !isAssetCompatible(assetName, systype)) {
+    return -1;
+  }
+
+  let score = 0;
+
+  // Prefer newer Python versions
+  const [major, minor, patch] = parsed.pythonVersion.split('.').map(Number);
+  score += major * 10000 + minor * 100 + patch;
+
+  // Prefer optimized builds over basic builds
+  const buildVariant = parsed.buildVariant.toLowerCase();
+  const packageType = parsed.packageType.toLowerCase();
+  
+  if (buildVariant.includes('pgo') || buildVariant.includes('lto')) {
+    score += 1000; // Highly prefer optimized builds
+  }
+  
+  // Prefer install-only packages (smaller, production-ready)
+  if (packageType.includes('install')) {
+    score += 500;
+  }
+  
+  // Prefer stripped binaries (smaller size)
+  if (packageType.includes('stripped')) {
+    score += 100;
+  }
+
+  // Prefer tar.gz over tar.zst for compatibility
+  if (parsed.compression === 'tar.gz') {
+    score += 10;
+  }
+
+  return score;
+}
+
+/**
+ * Check if Python version is supported (max 3.13)
+ * @param {string} version - Python version string
+ * @returns {boolean} True if supported
+ */
+function isPythonVersionSupported(version) {
+  const [major, minor] = version.split('.').map(Number);
+  return major === 3 && minor <= 13;
+}
+
+/**
+ * Determine compression type from filename
+ * @param {string} filename - Archive filename
+ * @returns {string} Compression type
+ */
+function getCompressionType(filename) {
+  if (filename.endsWith('.tar.zst')) {
+    return 'zst';
+  } else if (filename.endsWith('.tar.gz')) {
+    return 'gzip';
+  }
+  return 'unknown';
+}
+
+/**
+ * Download registry file from remote source
+ * @param {object} regfile - Registry file information
+ * @param {string} destinationDir - Download destination directory
+ * @param {object} options - Optional configuration
+ * @returns {Promise<string>} Path to downloaded file
+ */
 async function downloadRegistryFile(regfile, destinationDir, options = undefined) {
   options = options || {};
   let archivePath = undefined;
 
+  // Check for pre-downloaded package
   if (options.predownloadedPackageDir) {
     archivePath = path.join(options.predownloadedPackageDir, regfile.name);
     if (await fileExists(archivePath)) {
@@ -226,46 +418,43 @@ async function downloadRegistryFile(regfile, destinationDir, options = undefined
     }
   }
 
-  for await (const { url } of registryFileMirrorIterator(regfile.download_url)) {
-    archivePath = path.join(destinationDir, regfile.name);
-    // if already downloaded
+  // Use download_url directly from GitHub API
+  archivePath = path.join(destinationDir, regfile.name);
+  
+  // Skip if already downloaded
+  if (await fileExists(archivePath)) {
+    return archivePath;
+  }
+
+  const pipeline = promisify(stream.pipeline);
+  try {
+    await pipeline(
+      got.stream(regfile.download_url, {
+        timeout: 60 * 1000,
+        retry: { limit: 5 },
+        https: {
+          certificateAuthority: HTTPS_CA_CERTIFICATES,
+        },
+      }),
+      fs.createWriteStream(archivePath),
+    );
+    
     if (await fileExists(archivePath)) {
       return archivePath;
     }
-    const pipeline = promisify(stream.pipeline);
-    try {
-      await pipeline(
-        got.stream(url, {
-          https: {
-            certificateAuthority: HTTPS_CA_CERTIFICATES,
-          },
-        }),
-        fs.createWriteStream(archivePath),
-      );
-      if (await fileExists(archivePath)) {
-        return archivePath;
-      }
-    } catch (err) {
-      console.error(err);
-    }
+  } catch (err) {
+    console.error('Failed to download', regfile.download_url, err);
+    throw err;
   }
+
+  throw new Error('Failed to download Python archive');
 }
 
-async function* registryFileMirrorIterator(downloadUrl) {
-  while (true) {
-    const response = await got.head(downloadUrl, {
-      timeout: 60 * 1000,
-      retry: { limit: 5 },
-      https: {
-        certificateAuthority: HTTPS_CA_CERTIFICATES,
-      },
-    });
-    yield {
-      url: response.headers.location,
-    };
-  }
-}
-
+/**
+ * Check if file exists
+ * @param {string} filePath - Path to check
+ * @returns {Promise<boolean>} True if file exists
+ */
 async function fileExists(filePath) {
   try {
     await fs.promises.access(filePath);
@@ -274,22 +463,181 @@ async function fileExists(filePath) {
   return false;
 }
 
-async function extractTarGz(source, destination) {
+/**
+ * Extract archive based on compression format
+ * @param {string} source - Source archive path
+ * @param {string} destination - Destination directory
+ * @returns {Promise<string>} Destination directory path
+ */
+async function extractArchive(source, destination) {
   try {
     await fs.promises.access(destination);
   } catch (err) {
     await fs.promises.mkdir(destination, { recursive: true });
   }
-  return await new Promise((resolve, reject) => {
-    fs.createReadStream(source)
-      .pipe(zlib.createGunzip())
-      .on('error', (err) => reject(err))
-      .pipe(
-        tar.extract({
-          cwd: destination,
-        }),
-      )
-      .on('error', (err) => reject(err))
-      .on('close', () => resolve(destination));
+
+  const filename = path.basename(source);
+  
+  if (filename.endsWith('.tar.zst')) {
+    // Handle zstandard compressed tarballs
+    return await extractTarZst(source, destination);
+  } else if (filename.endsWith('.tar.gz')) {
+    // Handle gzip compressed tarballs
+    return await extractTarGz(source, destination);
+  } else {
+    throw new Error(`Unsupported archive format: ${filename}`);
+  }
+}
+
+/**
+ * Extract gzip compressed tar archive
+ * @param {string} source - Source archive path
+ * @param {string} destination - Destination directory
+ * @returns {Promise<string>} Destination directory path
+ */
+async function extractTarGz(source, destination) {
+  const pipeline = promisify(stream.pipeline);
+  
+  await pipeline(
+    fs.createReadStream(source),
+    zlib.createGunzip(),
+    tar.extract({ cwd: destination })
+  );
+  
+  return destination;
+}
+
+/**
+ * Extract zstandard compressed tar archive with multiple fallback methods
+ * @param {string} source - Source archive path
+ * @param {string} destination - Destination directory
+ * @returns {Promise<string>} Destination directory path
+ */
+async function extractTarZst(source, destination) {
+  const pipeline = promisify(stream.pipeline);
+  
+  // Method 1: Try Node.js native zstd support (available since v18)
+  const nodeVersion = process.version;
+  const hasNativeZstd = semver.gte(nodeVersion, '18.0.0');
+  
+  if (hasNativeZstd) {
+    try {
+      // Try using native zstd decompression via zlib.createUnzip()
+      await pipeline(
+        fs.createReadStream(source),
+        zlib.createUnzip(), // createUnzip can auto-detect format including zstd
+        tar.extract({ cwd: destination })
+      );
+      return destination;
+    } catch (err) {
+      console.warn('Native zstd decompression failed, trying fallback:', err.message);
+      // Continue to fallback methods
+    }
+  }
+  
+  // Method 2: Use fzstd package (pure JavaScript implementation)
+  if (fzstd) {
+    try {
+      return await extractTarZstWithFzstd(source, destination);
+    } catch (err) {
+      console.warn('fzstd decompression failed, trying system command:', err.message);
+      // Continue to system command fallback
+    }
+  }
+  
+  // Method 3: Use system zstd command if available
+  return await extractTarZstWithSystemCommand(source, destination);
+}
+
+/**
+ * Extract zstandard archive using fzstd pure JavaScript implementation
+ * @param {string} source - Source archive path
+ * @param {string} destination - Destination directory
+ * @returns {Promise<string>} Destination directory path
+ */
+async function extractTarZstWithFzstd(source, destination) {
+  return new Promise((resolve, reject) => {
+    const sourceStream = fs.createReadStream(source);
+    const chunks = [];
+    
+    sourceStream.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+    
+    sourceStream.on('end', () => {
+      try {
+        const compressedBuffer = Buffer.concat(chunks);
+        const decompressedBuffer = fzstd.decompress(compressedBuffer);
+        
+        // Create a readable stream from the decompressed buffer
+        const decompressedStream = stream.Readable.from(decompressedBuffer);
+        
+        // Extract the tar content
+        const tarExtract = tar.extract({ cwd: destination });
+        
+        decompressedStream.pipe(tarExtract);
+        
+        tarExtract.on('end', () => resolve(destination));
+        tarExtract.on('error', reject);
+        
+      } catch (err) {
+        reject(new Error(`fzstd decompression failed: ${err.message}`));
+      }
+    });
+    
+    sourceStream.on('error', reject);
+  });
+}
+
+/**
+ * Extract zstandard archive using system zstd command (fallback method)
+ * @param {string} source - Source archive path
+ * @param {string} destination - Destination directory
+ * @returns {Promise<string>} Destination directory path
+ */
+async function extractTarZstWithSystemCommand(source, destination) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    
+    // Try using system zstd command
+    const zstd = spawn('zstd', ['-d', '-c', source], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    const tarExtract = spawn('tar', ['-x', '-C', destination], {
+      stdio: ['pipe', 'ignore', 'pipe']
+    });
+    
+    // Pipe zstd output to tar input
+    zstd.stdout.pipe(tarExtract.stdin);
+    
+    let errorOutput = '';
+    
+    // Collect error output from both processes
+    zstd.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+    
+    tarExtract.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+    
+    // Handle tar process completion
+    tarExtract.on('close', (code) => {
+      if (code === 0) {
+        resolve(destination);
+      } else {
+        reject(new Error(`Failed to extract archive: ${errorOutput}`));
+      }
+    });
+    
+    // Handle process errors
+    zstd.on('error', (err) => {
+      reject(new Error(`zstd command failed: ${err.message}. Please install zstd or the fzstd npm package.`));
+    });
+    
+    tarExtract.on('error', (err) => {
+      reject(new Error(`tar command failed: ${err.message}`));
+    });
   });
 }

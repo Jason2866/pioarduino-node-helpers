@@ -105,8 +105,10 @@ jjxDah2nGN59PRbxYvnKkKj9
 
 // Cache for parsed release data to avoid repeated API calls
 let cachedReleaseData = null;
+let cachedLatestTag = null;
 const RELEASE_CACHE_TTL = 300000; // 5 minutes
 let releaseCacheTime = 0;
+let latestTagCacheTime = 0;
 
 // Pre-compiled regex for better performance
 const ASSET_NAME_REGEX = /^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/;
@@ -226,6 +228,45 @@ export async function installPortablePython(destinationDir, options = undefined)
 }
 
 /**
+ * Get the latest release tag from GitHub API with caching
+ * @returns {Promise<string>} Latest release tag
+ */
+async function getLatestReleaseTag() {
+  const now = Date.now();
+  
+  // Use cached tag if still valid
+  if (cachedLatestTag && (now - latestTagCacheTime) < RELEASE_CACHE_TTL) {
+    return cachedLatestTag;
+  }
+  
+  try {
+    const latestRelease = await got(
+      'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest',
+      {
+        timeout: 10000,
+        retry: { limit: 3 },
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'PlatformIO-Python-Installer',
+        },
+        https: {
+          certificateAuthority: HTTPS_CA_CERTIFICATES,
+        },
+      },
+    ).json();
+    
+    cachedLatestTag = latestRelease.tag_name;
+    latestTagCacheTime = now;
+    
+    return cachedLatestTag;
+  } catch (err) {
+    // Fallback to a known stable release if API fails
+    console.warn('Failed to get latest release tag, using fallback:', err.message);
+    return '20250818';
+  }
+}
+
+/**
  * Fetch portable Python packages from astral-sh/python-build-standalone with caching
  * @returns {Promise<object|null>} Registry file information or null if not found
  */
@@ -238,9 +279,12 @@ async function getRegistryFile() {
     return selectBestAsset(cachedReleaseData, systype);
   }
   
+  // Get latest release tag dynamically
+  const latestTag = await getLatestReleaseTag();
+  
   // Load release data from astral-sh/python-build-standalone
   const releaseData = await got(
-    'https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20250818',
+    `https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${latestTag}`,
     {
       timeout: 60000,
       retry: { limit: 5 },

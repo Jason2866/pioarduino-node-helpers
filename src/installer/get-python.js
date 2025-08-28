@@ -218,7 +218,7 @@ async function isValidPythonVersion(executable) {
     const { execSync } = require('child_process');
     const output = execSync(`"${executable}" --version`, {
       encoding: 'utf8',
-      timeout: 3000,
+      timeout: 1000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     

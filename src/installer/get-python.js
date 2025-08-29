@@ -112,7 +112,7 @@ let releaseCacheTime = 0;
 let latestTagCacheTime = 0;
 
 // Fallback release tag if latest release has incompatible naming
-const FALLBACK_RELEASE_TAG = '20250818';
+const FALLBACK_RELEASE_TAG = '20250828';
 
 // Pre-compiled regex for better performance
 const ASSET_NAME_REGEX = /^cpython-(\d+\.\d+\.\d+)\+(\d+)-([^-]+)-([^-]+)-([^-]+)(?:-([^-]+))?(?:-([^.]+))?\.(tar\.(?:gz|zst))$/;
@@ -154,7 +154,7 @@ async function verifyFileIntegrity(filePath, expectedSHA) {
     const actualSHA = await calculateFileSHA256(filePath);
     const expectedSHAClean = expectedSHA.replace('sha256:', '').toLowerCase();
     const actualSHAClean = actualSHA.toLowerCase();
-    
+
     if (actualSHAClean === expectedSHAClean) {
       log('info', `File integrity verified: ${path.basename(filePath)}`);
       return true;
@@ -170,22 +170,22 @@ async function verifyFileIntegrity(filePath, expectedSHA) {
 
 /**
  * Search for existing Python executable in system PATH with version validation
- * Only accepts Python versions 3.10 through 3.13. Stops at first valid installation found.
+ * Accepts Python versions 3.10 through 3.13. Stops at first valid installation found.
  * @returns {Promise<string|null>} Path to first valid Python executable or null if not found
  */
 export async function findPythonExecutable() {
   const exenames = proc.IS_WINDOWS ? ['python.exe'] : ['python3', 'python'];
   const envPath = process.env.PLATFORMIO_PATH || process.env.PATH;
   const errors = [];
-  
+
   log('info', 'Searching for compatible Python installation (3.10-3.13)');
-  
+
   // Search through all PATH locations for Python executables with early exit
   for (const location of envPath.split(path.delimiter)) {
     for (const exename of exenames) {
       const executable = path.normalize(path.join(location, exename)).replace(/"/g, '');
       try {
-        if (fs.existsSync(executable) && 
+        if (fs.existsSync(executable) &&
             (await isValidPythonVersion(executable)) &&
             (await callInstallerScript(executable, ['check', 'python']))) {
           log('info', `Found compatible Python: ${executable}`);
@@ -196,20 +196,21 @@ export async function findPythonExecutable() {
       }
     }
   }
-  
+
   // Only reached if no valid Python installation found
   for (const err of errors) {
     if (err.toString().includes('Could not find distutils module')) {
       throw err;
     }
   }
-  
-  log('info', 'No compatible system Python found, will install portable Python');
+
+  log('info', 'No compatible system Python found, will install Python 3.13');
   return null;
 }
 
 /**
  * Check if Python executable has acceptable version (3.10-3.13)
+ * This function is used for FINDING existing installations
  * @param {string} executable - Path to Python executable
  * @returns {Promise<boolean>} True if version is acceptable
  */
@@ -221,10 +222,10 @@ async function isValidPythonVersion(executable) {
       timeout: 3000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    
+
     const versionMatch = output.match(/Python (\d+\.\d+\.\d+)/);
     if (!versionMatch) return false;
-    
+
     const version = versionMatch[1];
     return semver.gte(version, '3.10.0') && semver.lt(version, '3.14.0');
   } catch {
@@ -240,7 +241,7 @@ async function isValidPythonVersion(executable) {
 async function ensurePythonExeExists(pythonDir) {
   const binDir = proc.IS_WINDOWS ? pythonDir : path.join(pythonDir, 'bin');
   const executables = ['python.exe', 'python3', 'python'];
-  
+
   for (const name of executables) {
     try {
       await fs.promises.access(path.join(binDir, name));
@@ -253,43 +254,43 @@ async function ensurePythonExeExists(pythonDir) {
 }
 
 /**
- * Download and install portable Python distribution
+ * Download and install Astral-sh Python distribution
  * @param {string} destinationDir - Target installation directory
  * @param {object} options - Optional configuration
  * @returns {Promise<string>} Path to installed Python directory
  */
 export async function installPortablePython(destinationDir, options = undefined) {
-  log('info', 'Starting portable Python installation');
-  
+  log('info', 'Starting Python 3.13 installation');
+
   const registryFile = await getRegistryFile();
   if (!registryFile) {
-    throw new Error(`Could not find portable Python for ${proc.getSysType()}`);
+    throw new Error(`Could not find Python 3.13 for ${proc.getSysType()}`);
   }
-  
+
   log('info', `Selected Python package: ${registryFile.name}`);
-  
+
   const archivePath = await downloadRegistryFile(
     registryFile,
     core.getTmpDir(),
     options,
   );
   if (!archivePath) {
-    throw new Error('Could not download portable Python');
+    throw new Error('Could not download Python 3.13');
   }
-  
+
   // Clean up existing installation
   try {
     await fs.promises.rm(destinationDir, { recursive: true, force: true });
   } catch (err) {
     // Ignore cleanup errors
   }
-  
+
   // Extract archive and verify Python executable
   log('info', 'Extracting Python archive');
   await extractArchive(archivePath, destinationDir);
   await ensurePythonExeExists(destinationDir);
-  
-  log('info', `Python installation completed: ${destinationDir}`);
+
+  log('info', `Python 3.13 installation completed: ${destinationDir}`);
   return destinationDir;
 }
 
@@ -299,12 +300,12 @@ export async function installPortablePython(destinationDir, options = undefined)
  */
 async function getLatestReleaseTag() {
   const now = Date.now();
-  
+
   // Use cached tag if still valid
   if (cachedLatestTag && (now - latestTagCacheTime) < RELEASE_CACHE_TTL) {
     return cachedLatestTag;
   }
-  
+
   try {
     log('info', 'Fetching latest release tag from GitHub');
     const latestRelease = await got(
@@ -314,17 +315,17 @@ async function getLatestReleaseTag() {
         retry: { limit: 3 },
         headers: {
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'PlatformIO-Python-Installer',
+          'User-Agent': 'pioarduino-Python-Installer',
         },
         https: {
           certificateAuthority: HTTPS_CA_CERTIFICATES,
         },
       },
     ).json();
-    
+
     cachedLatestTag = latestRelease.tag_name;
     latestTagCacheTime = now;
-    
+
     log('info', `Using latest release: ${cachedLatestTag}`);
     return cachedLatestTag;
   } catch (err) {
@@ -335,27 +336,27 @@ async function getLatestReleaseTag() {
 }
 
 /**
- * Fetch portable Python packages from astral-sh/python-build-standalone with fallback strategy
+ * Fetch Python packages from astral-sh/python-build-standalone with fallback strategy
  * @returns {Promise<object|null>} Registry file information or null if not found
  */
 async function getRegistryFile() {
   const systype = proc.getSysType();
   const now = Date.now();
-  
+
   // Use cached data if still valid
   if (cachedReleaseData && (now - releaseCacheTime) < RELEASE_CACHE_TTL) {
     return selectBestAsset(cachedReleaseData, systype);
   }
-  
+
   // Try latest release first
   let selectedAsset = await tryGetRegistryFromRelease(await getLatestReleaseTag(), systype);
-  
+
   // If latest release has no compatible assets, fallback to known working release
   if (!selectedAsset && cachedLatestTag !== FALLBACK_RELEASE_TAG) {
-    log('warn', 'No compatible assets in latest release, trying fallback release');
+    log('warn', 'No compatible Python 3.13 assets in latest release, trying fallback release');
     selectedAsset = await tryGetRegistryFromRelease(FALLBACK_RELEASE_TAG, systype);
   }
-  
+
   return selectedAsset;
 }
 
@@ -389,7 +390,7 @@ async function tryGetRegistryFromRelease(releaseTag, systype) {
       cachedReleaseData = releaseData;
       releaseCacheTime = now;
     }
-    
+
     return selectBestAsset(releaseData, systype);
   } catch (err) {
     log('warn', `Failed to fetch release ${releaseTag}: ${err.message}`);
@@ -398,18 +399,30 @@ async function tryGetRegistryFromRelease(releaseTag, systype) {
 }
 
 /**
- * Select the best asset for the given system type with enhanced compatibility detection
+ * Select the best asset for the given system type
  * @param {object} releaseData - GitHub release data
  * @param {string} systype - Target system type
  * @returns {object|null} Best asset or null if none found
  */
 function selectBestAsset(releaseData, systype) {
   // Filter compatible assets with multiple naming pattern support
-  const compatibleAssets = releaseData.assets.filter(asset => 
-    isAssetCompatible(asset.name, systype) || isAssetCompatibleFallback(asset.name, systype)
-  );
+  const compatibleAssets = releaseData.assets.filter(asset => {
+    const isCompatible = isAssetCompatible(asset.name, systype) || isAssetCompatibleFallback(asset.name, systype);
+    if (!isCompatible) return false;
+
+    const parsed = parseAssetName(asset.name) || parseAssetNameFallback(asset.name);
+    if (!parsed) return false;
+
+    const versionParts = parsed.pythonVersion.split('.');
+    const major = parseInt(versionParts[0], 10);
+    const minor = parseInt(versionParts[1], 10);
+
+    // Only Python 3.13.x allowed for installation
+    return major === 3 && minor === 13;
+  });
 
   if (compatibleAssets.length === 0) {
+    log('warn', 'No Python 3.13 assets found for installation');
     return null;
   }
 
@@ -436,13 +449,13 @@ function selectBestAsset(releaseData, systype) {
 }
 
 /**
- * Parse asset filename to extract metadata (optimized with cached regex)
+ * Parse asset filename to extract metadata
  * @param {string} assetName - Asset filename
  * @returns {object|null} Parsed metadata or null if parsing failed
  */
 function parseAssetName(assetName) {
   const match = ASSET_NAME_REGEX.exec(assetName);
-  
+
   if (!match) {
     return null;
   }
@@ -496,7 +509,7 @@ function parseAssetNameFallback(assetName) {
 }
 
 /**
- * Check if asset is compatible with target system (optimized version)
+ * Check if asset is compatible with target system
  * @param {string} assetName - Asset filename
  * @param {string} systype - Target system type
  * @returns {boolean} True if compatible
@@ -507,18 +520,18 @@ function isAssetCompatible(assetName, systype) {
     return false;
   }
 
-  // Quick Python version check (max 3.13)
+  // Quick Python version check for v3.13
   const versionParts = parsed.pythonVersion.split('.');
   const major = parseInt(versionParts[0], 10);
   const minor = parseInt(versionParts[1], 10);
-  if (major !== 3 || minor > 13) {
+  if (major !== 3 || minor !== 13) {
     return false;
   }
 
   // Exclude unwanted build variants
   const buildVariant = parsed.buildVariant;
   if (buildVariant && (
-    buildVariant.includes('freethreaded') || 
+    buildVariant.includes('freethreaded') ||
     buildVariant.includes('debug') ||
     buildVariant.includes('noopt')
   )) {
@@ -531,8 +544,8 @@ function isAssetCompatible(assetName, systype) {
     return false;
   }
 
-  return parsed.arch === systemMap.arch && 
-         parsed.os === systemMap.os && 
+  return parsed.arch === systemMap.arch &&
+         parsed.os === systemMap.os &&
          parsed.libc.startsWith(systemMap.libc);
 }
 
@@ -548,11 +561,10 @@ function isAssetCompatibleFallback(assetName, systype) {
     return false;
   }
 
-  // Python version check
   const versionParts = parsed.pythonVersion.split('.');
   const major = parseInt(versionParts[0], 10);
   const minor = parseInt(versionParts[1], 10);
-  if (major !== 3 || minor > 13) {
+  if (major !== 3 || minor !== 13) {
     return false;
   }
 
@@ -599,7 +611,7 @@ function getSystemMapping(systype) {
 }
 
 /**
- * Score assets to prefer the best build variant (enhanced for fallback support)
+ * Score assets to prefer the best build variant
  * @param {string} assetName - Asset filename
  * @param {string} systype - Target system type
  * @returns {number} Score (higher is better, -1 if incompatible)
@@ -607,22 +619,22 @@ function getSystemMapping(systype) {
 function scoreAsset(assetName, systype) {
   let parsed = parseAssetName(assetName);
   let isFallback = false;
-  
+
   // Try fallback parsing if primary parsing fails
   if (!parsed) {
     parsed = parseAssetNameFallback(assetName);
     isFallback = true;
   }
-  
+
   if (!parsed) {
     return -1;
   }
 
   // Check compatibility
-  const isCompatible = isFallback ? 
-    isAssetCompatibleFallback(assetName, systype) : 
+  const isCompatible = isFallback ?
+    isAssetCompatibleFallback(assetName, systype) :
     isAssetCompatible(assetName, systype);
-  
+
   if (!isCompatible) {
     return -1;
   }
@@ -644,15 +656,15 @@ function scoreAsset(assetName, systype) {
   // Performance optimization bonuses
   const buildVariant = parsed.buildVariant;
   const packageType = parsed.packageType;
-  
+
   if (buildVariant && (buildVariant.includes('pgo') || buildVariant.includes('lto'))) {
     score += 1000; // Highly prefer optimized builds
   }
-  
+
   if (packageType && packageType.includes('install')) {
     score += 500; // Prefer install-only packages
   }
-  
+
   if (packageType && packageType.includes('stripped')) {
     score += 100; // Prefer stripped binaries
   }
@@ -671,7 +683,7 @@ function scoreAsset(assetName, systype) {
  * @returns {string} Compression type
  */
 function getCompressionType(filename) {
-  return filename.endsWith('.tar.zst') ? 'zst' : 
+  return filename.endsWith('.tar.zst') ? 'zst' :
          filename.endsWith('.tar.gz') ? 'gzip' : 'unknown';
 }
 
@@ -750,7 +762,7 @@ async function downloadRegistryFile(regfile, destinationDir, options = {}) {
 }
 
 /**
- * Check if file exists (optimized)
+ * Check if file exists
  * @param {string} filePath - Path to check
  * @returns {Promise<boolean>} True if file exists
  */
@@ -764,7 +776,7 @@ async function fileExists(filePath) {
 }
 
 /**
- * Extract archive with optimized format detection
+ * Extract archive
  * @param {string} source - Source archive path
  * @param {string} destination - Destination directory
  * @returns {Promise<string>} Destination directory path
@@ -784,7 +796,7 @@ async function extractArchive(source, destination) {
 }
 
 /**
- * Extract gzip compressed tar archive (performance optimized)
+ * Extract gzip compressed tar archive
  * @param {string} source - Source archive path
  * @param {string} destination - Destination directory
  * @returns {Promise<string>} Destination directory path
@@ -795,7 +807,7 @@ async function extractTarGz(source, destination) {
   await pipeline(
     fs.createReadStream(source, { highWaterMark: 64 * 1024 }),
     zlib.createGunzip({ chunkSize: 64 * 1024 }),
-    tar.extract({ 
+    tar.extract({
       cwd: destination,
       strip: 0,
       preservePaths: false,
@@ -806,7 +818,7 @@ async function extractTarGz(source, destination) {
 }
 
 /**
- * Extract zstandard compressed tar archive using fzstd (performance optimized)
+ * Extract zstandard compressed tar archive using fzstd
  * @param {string} source - Source archive path
  * @param {string} destination - Destination directory
  * @returns {Promise<string>} Destination directory path
@@ -823,7 +835,7 @@ async function extractTarZst(source, destination) {
 
   await pipeline(
     decompressedStream,
-    tar.extract({ 
+    tar.extract({
       cwd: destination,
       strip: 0,
       preservePaths: false,

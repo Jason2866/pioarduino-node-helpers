@@ -169,6 +169,26 @@ async function verifyFileIntegrity(filePath, expectedSHA) {
 }
 
 /**
+ * Check if Python version is compatible
+ * @param {string} pythonVersion - Python version string (e.g., "3.13.1")
+ * @param {boolean} forInstallation - If true, only allows 3.13.x; if false, allows 3.10-3.13
+ * @returns {boolean} True if version is compatible
+ */
+function isPythonVersionCompatible(pythonVersion, forInstallation = false) {
+  const versionParts = pythonVersion.split('.');
+  const major = parseInt(versionParts[0], 10);
+  const minor = parseInt(versionParts[1], 10);
+
+  if (major !== 3) return false;
+
+  if (forInstallation) {
+    return minor === 13; // Only 3.13.x for installation
+  } else {
+    return minor >= 10 && minor <= 13; // 3.10-3.13 for finding existing
+  }
+}
+
+/**
  * Search for existing Python executable in system PATH with version validation
  * Accepts Python versions 3.10 through 3.13. Stops at first valid installation found.
  * @returns {Promise<string|null>} Path to first valid Python executable or null if not found
@@ -226,8 +246,7 @@ async function isValidPythonVersion(executable) {
     const versionMatch = output.match(/Python (\d+\.\d+\.\d+)/);
     if (!versionMatch) return false;
 
-    const version = versionMatch[1];
-    return semver.gte(version, '3.10.0') && semver.lt(version, '3.14.0');
+    return isPythonVersionCompatible(versionMatch[1], false); // Allow 3.10-3.13 for finding
   } catch {
     return false;
   }
@@ -405,20 +424,9 @@ async function tryGetRegistryFromRelease(releaseTag, systype) {
  * @returns {object|null} Best asset or null if none found
  */
 function selectBestAsset(releaseData, systype) {
-  // Filter compatible assets with multiple naming pattern support
+  // Filter compatible assets - only Python 3.13.x for installation
   const compatibleAssets = releaseData.assets.filter(asset => {
-    const isCompatible = isAssetCompatible(asset.name, systype) || isAssetCompatibleFallback(asset.name, systype);
-    if (!isCompatible) return false;
-
-    const parsed = parseAssetName(asset.name) || parseAssetNameFallback(asset.name);
-    if (!parsed) return false;
-
-    const versionParts = parsed.pythonVersion.split('.');
-    const major = parseInt(versionParts[0], 10);
-    const minor = parseInt(versionParts[1], 10);
-
-    // Only Python 3.13.x allowed for installation
-    return major === 3 && minor === 13;
+    return isAssetCompatible(asset.name, systype) || isAssetCompatibleFallback(asset.name, systype);
   });
 
   if (compatibleAssets.length === 0) {
@@ -520,11 +528,8 @@ function isAssetCompatible(assetName, systype) {
     return false;
   }
 
-  // Quick Python version check for v3.13
-  const versionParts = parsed.pythonVersion.split('.');
-  const major = parseInt(versionParts[0], 10);
-  const minor = parseInt(versionParts[1], 10);
-  if (major !== 3 || minor !== 13) {
+  // Only Python 3.13.x for installation (centralized check)
+  if (!isPythonVersionCompatible(parsed.pythonVersion, true)) {
     return false;
   }
 
@@ -561,10 +566,8 @@ function isAssetCompatibleFallback(assetName, systype) {
     return false;
   }
 
-  const versionParts = parsed.pythonVersion.split('.');
-  const major = parseInt(versionParts[0], 10);
-  const minor = parseInt(versionParts[1], 10);
-  if (major !== 3 || minor !== 13) {
+  // Only Python 3.13.x for installation (centralized check)
+  if (!isPythonVersionCompatible(parsed.pythonVersion, true)) {
     return false;
   }
 

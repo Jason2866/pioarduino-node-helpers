@@ -283,7 +283,7 @@ export async function installPortablePython(destinationDir, options = {}) {
  * @returns {Promise<string>} Full path to Python executable
  * @throws {Error} If no executable found in the directory
  */
-export async function getPythonExecutablePath(pythonDir) {
+function getPythonExecutablePath(pythonDir) {
   const executables = proc.IS_WINDOWS ? ['python.exe'] : ['python3', 'python'];
 
   // Check common locations where UV might install Python
@@ -300,7 +300,7 @@ export async function getPythonExecutablePath(pythonDir) {
     for (const exeName of executables) {
       const fullPath = path.join(searchPath, exeName);
       try {
-        await fs.promises.access(fullPath, fs.constants.X_OK);
+        fs.accessSync(fullPath, fs.constants.X_OK);
         log('info', `Found Python executable: ${fullPath}`);
         return fullPath;
       } catch (err) {

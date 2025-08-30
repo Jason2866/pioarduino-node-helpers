@@ -11,7 +11,6 @@ import * as proc from '../proc';
 import { callInstallerScript } from './get-pioarduino';
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { promisify } from 'util';
 
 const execFile = promisify(require('child_process').execFile);
@@ -23,6 +22,7 @@ const execFile = promisify(require('child_process').execFile);
  */
 function log(level, message) {
   const timestamp = new Date().toISOString();
+  // eslint-disable-next-line no-console
   console[level](`[${timestamp}] [Python-Installer] ${message}`);
 }
 
@@ -38,7 +38,9 @@ function isPythonVersionCompatible(pythonVersion, forInstallation = false) {
   const major = parseInt(versionParts[0], 10);
   const minor = parseInt(versionParts[1], 10);
 
-  if (major !== 3) return false;
+  if (major !== 3) {
+    return false;
+  }
 
   if (forInstallation) {
     return minor === 13; // Only 3.13.x for new installations
@@ -107,7 +109,9 @@ async function isValidPythonVersion(executable) {
     });
 
     const versionMatch = output.match(/Python (\d+\.\d+\.\d+)/);
-    if (!versionMatch) return false;
+    if (!versionMatch) {
+      return false;
+    }
 
     return isPythonVersionCompatible(versionMatch[1], false); // Allow 3.10-3.13 for finding existing
   } catch {
@@ -272,7 +276,7 @@ async function ensurePythonExeExists(pythonDir, pythonVersion = '3.13') {
  * @returns {Promise<string>} Path to installed Python directory
  * @throws {Error} If Python installation fails for any reason
  */
-export async function installPortablePython(destinationDir, options = {}) {
+export async function installPortablePython(destinationDir) {
   log('info', 'Starting Python 3.13 installation');
 
   // UV-based installation is now the only supported method

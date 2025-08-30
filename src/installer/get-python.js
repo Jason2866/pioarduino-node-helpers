@@ -66,9 +66,11 @@ export async function findPythonExecutable() {
     for (const exename of exenames) {
       const executable = path.normalize(path.join(location, exename)).replace(/"/g, '');
       try {
-        if (fs.existsSync(executable) &&
-            (await isValidPythonVersion(executable)) &&
-            (await callInstallerScript(executable, ['check', 'python']))) {
+        if (
+          fs.existsSync(executable) &&
+          (await isValidPythonVersion(executable)) &&
+          (await callInstallerScript(executable, ['check', 'python']))
+        ) {
           log('info', `Found compatible Python: ${executable}`);
           return executable;
         }
@@ -101,7 +103,7 @@ async function isValidPythonVersion(executable) {
     const output = execSync(`"${executable}" --version`, {
       encoding: 'utf8',
       timeout: 3000,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const versionMatch = output.match(/Python (\d+\.\d+\.\d+)/);
@@ -141,14 +143,21 @@ async function installUV() {
   try {
     if (proc.IS_WINDOWS) {
       // Windows: Use PowerShell with official installer script
-      await execFile('powershell', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-        'irm https://astral.sh/uv/install.ps1 | iex'
-      ], { timeout: 120000 });
+      await execFile(
+        'powershell',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          'irm https://astral.sh/uv/install.ps1 | iex',
+        ],
+        { timeout: 120000 },
+      );
     } else {
       // Unix/Linux/macOS: Use shell with curl installer
       await execFile('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], {
-        timeout: 120000
+        timeout: 120000,
       });
     }
 
@@ -167,7 +176,7 @@ async function installUV() {
  * @returns {Promise<string>} Path to installed Python directory
  * @throws {Error} If UV installation or Python installation fails
  */
-async function installPythonWithUV(destinationDir, pythonVersion = "3.13") {
+async function installPythonWithUV(destinationDir, pythonVersion = '3.13') {
   log('info', `Installing Python ${pythonVersion} using UV`);
 
   // Ensure UV is available, install if necessary
@@ -190,14 +199,14 @@ async function installPythonWithUV(destinationDir, pythonVersion = "3.13") {
     const env = {
       ...process.env,
       UV_PYTHON_INSTALL_DIR: destinationDir,
-      UV_CACHE_DIR: path.join(core.getTmpDir(), 'uv-cache')
+      UV_CACHE_DIR: path.join(core.getTmpDir(), 'uv-cache'),
     };
 
     // Execute UV Python installation command
     await execFile('uv', ['python', 'install', pythonVersion], {
       env,
       timeout: 300000, // 5 minutes timeout for download and installation
-      cwd: destinationDir
+      cwd: destinationDir,
     });
 
     // Verify that Python executable was successfully installed
@@ -205,7 +214,6 @@ async function installPythonWithUV(destinationDir, pythonVersion = "3.13") {
 
     log('info', `Python ${pythonVersion} installation completed: ${destinationDir}`);
     return destinationDir;
-
   } catch (err) {
     throw new Error(`UV Python installation failed: ${err.message}`);
   }
@@ -219,7 +227,7 @@ async function installPythonWithUV(destinationDir, pythonVersion = "3.13") {
  * @returns {Promise<boolean>} True if executable exists and is accessible
  * @throws {Error} If no Python executable found in expected locations
  */
-async function ensurePythonExeExists(pythonDir, pythonVersion = "3.13") {
+async function ensurePythonExeExists(pythonDir, pythonVersion = '3.13') {
   // UV typically installs to subdirectories organized by version
   const possiblePaths = [
     pythonDir, // Direct installation in target directory
@@ -269,10 +277,12 @@ export async function installPortablePython(destinationDir, options = {}) {
 
   // UV-based installation is now the only supported method
   try {
-    return await installPythonWithUV(destinationDir, "3.13");
+    return await installPythonWithUV(destinationDir, '3.13');
   } catch (uvError) {
     log('error', `UV installation failed: ${uvError.message}`);
-    throw new Error(`Python installation failed: ${uvError.message}. Please ensure UV can be installed and internet connection is available.`);
+    throw new Error(
+      `Python installation failed: ${uvError.message}. Please ensure UV can be installed and internet connection is available.`,
+    );
   }
 }
 
@@ -313,9 +323,4 @@ function getPythonExecutablePath(pythonDir) {
 }
 
 // Export utility functions for external use
-export {
-  isPythonVersionCompatible,
-  isUVAvailable,
-  installUV,
-  getPythonExecutablePath
-};
+export { isPythonVersionCompatible, isUVAvailable, installUV, getPythonExecutablePath };

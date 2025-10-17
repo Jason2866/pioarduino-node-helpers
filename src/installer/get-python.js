@@ -337,4 +337,10 @@ async function getPythonExecutablePath(pythonVersion = '3.13') {
 }
 
 // Export utility functions for external use
-export { isPythonVersionCompatible, isUVAvailable, installUV, getPythonExecutablePath };
+export {
+  isPythonVersionCompatible,
+  isUVAvailable,
+  installUV,
+  getPythonExecutablePath,
+  getUVCommand,
+};

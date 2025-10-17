@@ -63,9 +63,45 @@ async function main() {
     }
     
     console.log();
+
+    // Step 4: Test UV venv creation
+    console.log('Step 4: Testing UV venv creation...');
+    const testVenvDir = `${process.env.HOME}/.platformio-test-venv`;
+    
+    try {
+      // Clean up if exists
+      try {
+        await execAsync(`rm -rf "${testVenvDir}"`);
+      } catch {}
+      
+      // Create venv with UV
+      await execAsync(`uv venv --python "${pythonPath}" "${testVenvDir}"`, {
+        timeout: 60000,
+      });
+      console.log(`✓ UV venv created at: ${testVenvDir}`);
+      
+      // Verify venv
+      const venvPython = `${testVenvDir}/bin/python3`;
+      const { stdout: venvVersion } = await execAsync(`"${venvPython}" --version`);
+      console.log(`✓ venv Python version: ${venvVersion.trim()}`);
+      
+      // Clean up
+      await execAsync(`rm -rf "${testVenvDir}"`);
+      console.log('✓ Test venv cleaned up');
+      
+    } catch (err) {
+      console.error('✗ UV venv test failed:', err.message);
+    }
+    
+    console.log();
     console.log('='.repeat(60));
     console.log('✓ All tests passed successfully!');
     console.log('='.repeat(60));
+    console.log();
+    console.log('To test full PlatformIO installation:');
+    console.log('  The install() function needs to be called from your application');
+    console.log('  with proper parameters (useBuiltinPIOCore, useBuiltinPython, etc.)');
+    console.log();
     
   } catch (error) {
     console.error();

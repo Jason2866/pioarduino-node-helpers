@@ -6,8 +6,8 @@
  * the root directory of this source tree.
  */
 
-import * as proc from '../proc';
-import { callInstallerScript } from './get-pioarduino';
+import * as proc from '../proc.js';
+import { callInstallerScript } from './get-pioarduino.js';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';

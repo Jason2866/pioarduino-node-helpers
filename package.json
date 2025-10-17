@@ -10,7 +10,10 @@
     "build": "webpack --env build",
     "dev": "webpack --progress --watch --env dev",
     "lint": "eslint --ext js src || exit 0",
-    "format": "prettier --single-quote --print-width 88 --write \"src/**/*.js\""
+    "format": "prettier --single-quote --print-width 88 --write \"src/**/*.js\"",
+    "test": "node test/test-uv-only.mjs && node test/test-pioarduino-script.mjs",
+    "test:uv": "node test/test-uv-only.mjs",
+    "test:pioarduino": "node test/test-pioarduino-script.mjs"
   },
   "repository": {
     "type": "git",

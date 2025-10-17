@@ -444,10 +444,6 @@ export default class pioarduinoCoreStage extends BaseStage {
       const installOutput = await callInstallerScript(pythonToUse, scriptArgs);
       console.info('PlatformIO installation output:', installOutput);
 
-      // Install UV in the penv for future use
-      withProgress('Installing UV in penv', 60);
-      await this.installUVInPenv();
-
       // Load the core state from the installer script
       withProgress('Loading pioarduino Core state', 80);
       await this.loadCoreState();

@@ -410,7 +410,7 @@ export default class pioarduinoCoreStage extends BaseStage {
     this.status = BaseStage.STATUS_INSTALLING;
 
     if (!withProgress) {
-      withProgress = () => { };
+      withProgress = () => {};
     }
     withProgress('Preparing for installation', 10);
     try {
@@ -429,58 +429,23 @@ export default class pioarduinoCoreStage extends BaseStage {
 
       withProgress('Installing pioarduino Core', 20);
 
-      // Use UV-managed Python if available, otherwise prompt for Python
+      // Use the Python installer script to set up penv with UV
       const pythonToUse = uvPythonPath || (await this.whereIsPython({ prompt: true }));
       console.info('Using Python for PlatformIO installation:', pythonToUse);
 
-      // Create penv directory with UV if it doesn't exist
-      const penvDir = pioarduinoCoreStage.getBuiltInPythonDir();
-      try {
-        await fs.access(penvDir);
-        console.info('penv directory already exists');
-      } catch {
-        console.info('Creating penv directory with UV venv...');
-        withProgress('Creating UV virtual environment', 25);
+      // Use the installer script to create penv and install PlatformIO
+      withProgress('Creating virtual environment and installing PlatformIO', 30);
 
-        // Create venv using UV (much faster than python -m venv)
-        const { getUVCommand } = await import('../get-python.js');
-        const uvCommand = await getUVCommand();
-        
-        await proc.getCommandOutput(uvCommand, ['venv', '--python', pythonToUse, penvDir], {
-          timeout: 60000,
-        });
-        console.info('UV virtual environment created at:', penvDir);
-      }
+      // Note: The 'install' command doesn't support --dev, --version-spec, or --no-auto-upgrade
+      // These options are only available for the 'check' command
+      const scriptArgs = ['install'];
 
-      // Install PlatformIO using UV pip into the venv (faster than traditional pip)
-      withProgress('Installing PlatformIO with UV', 30);
-      console.info('Installing PlatformIO using UV pip into venv...');
-      
-      const { getUVCommand } = await import('../get-python.js');
-      const uvCommand = await getUVCommand();
-      
-      // Get the Python executable from the venv
-      const venvPythonExe = await pioarduinoCoreStage.findBuiltInPythonExe();
-      
-      const pipArgs = ['pip', 'install', '--python', venvPythonExe];
-      
-      if (this.params.pioCoreVersionSpec) {
-        pipArgs.push(`platformio${this.params.pioCoreVersionSpec}`);
-      } else {
-        pipArgs.push('platformio');
-      }
-      
-      if (!this.params.disableAutoUpdates) {
-        pipArgs.push('--upgrade');
-      }
-      
-      const installOutput = await proc.getCommandOutput(uvCommand, pipArgs, {
-        timeout: 300000, // 5 minutes for installation
-      });
+      console.info('Running installer script with args:', scriptArgs);
+      const installOutput = await callInstallerScript(pythonToUse, scriptArgs);
       console.info('PlatformIO installation output:', installOutput);
 
-      // Check that PIO Core is installed, load its state and patch OS environment
-      withProgress('Loading pioarduino Core state', 40);
+      // Load the core state from the installer script
+      withProgress('Loading pioarduino Core state', 80);
       await this.loadCoreState();
 
       withProgress('Installing pioarduino Home', 80);

@@ -239,9 +239,13 @@ async function ensurePythonWithUV(pythonVersion = '3.13') {
 
     // Use 'uv python install' to ensure Python is available
     // UV will download and manage Python automatically
-    const installResult = await execFile(uvCommand, ['python', 'install', pythonVersion], {
-      timeout: 300000, // 5 minutes timeout for download
-    });
+    const installResult = await execFile(
+      uvCommand,
+      ['python', 'install', pythonVersion],
+      {
+        timeout: 300000, // 5 minutes timeout for download
+      },
+    );
 
     log('info', `UV Python install output: ${installResult.stdout}`);
 
@@ -304,11 +308,10 @@ async function getUVPythonPath(pythonVersion = '3.13') {
 /**
  * Main entry point for ensuring Python is available via UV
  * UV will download and manage Python automatically, no venv needed
- * @param {string} _destinationDir - Not used anymore, kept for API compatibility
  * @returns {Promise<string>} Path to UV-managed Python executable
  * @throws {Error} If Python installation fails for any reason
  */
-export async function installPortablePython(_destinationDir) {
+export async function installPortablePython() {
   log('info', 'Ensuring Python 3.13 is available via UV');
 
   try {

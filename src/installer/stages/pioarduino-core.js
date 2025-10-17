@@ -410,7 +410,7 @@ export default class pioarduinoCoreStage extends BaseStage {
     this.status = BaseStage.STATUS_INSTALLING;
 
     if (!withProgress) {
-      withProgress = () => { };
+      withProgress = () => {};
     }
     withProgress('Preparing for installation', 10);
     try {
@@ -432,14 +432,12 @@ export default class pioarduinoCoreStage extends BaseStage {
       if (this.useDevCore()) {
         scriptArgs.push('--dev');
       }
-      
+
       // Use UV-managed Python if available, otherwise prompt for Python
       const pythonToUse = uvPythonPath || (await this.whereIsPython({ prompt: true }));
       console.info('Using Python for PlatformIO installation:', pythonToUse);
-      
-      console.info(
-        await callInstallerScript(pythonToUse, scriptArgs),
-      );
+
+      console.info(await callInstallerScript(pythonToUse, scriptArgs));
 
       // Check that PIO Core is installed, load its state and patch OS environment
       withProgress('Loading pioarduino Core state', 40);

@@ -39,23 +39,46 @@ async function runTests() {
   const penvDir = path.join(coreDir, 'penv');
 
   try {
-    // Test 1: Find UV and Python
-    console.log('Test 1: Finding UV and Python...');
+    // Test 1: Find/Install Python (using the same logic as installPortablePython)
+    console.log('Test 1: Finding/Installing Python...');
     let python;
     try {
-      const uvPythonDir = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
-      const dirs = await fs.readdir(uvPythonDir);
-      const python313Dir = dirs.find(d => d.includes('cpython-3.13'));
-      if (python313Dir) {
-        const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
-        python = path.join(uvPythonDir, python313Dir, binDir, 'python3.13');
-        await fs.access(python);
-        pass(`Found UV Python: ${python}`);
-      } else {
-        throw new Error('UV Python 3.13 not found');
+      // This replicates the logic from installPortablePython
+      try {
+        const uvPythonDir = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
+        const dirs = await fs.readdir(uvPythonDir);
+        const python313Dir = dirs.find(d => d.includes('cpython-3.13'));
+        if (python313Dir) {
+          const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+          python = path.join(uvPythonDir, python313Dir, binDir, 'python3.13');
+          await fs.access(python);
+          pass(`Found UV Python: ${python}`);
+        } else {
+          throw new Error('UV Python not found');
+        }
+      } catch {
+        // If UV Python not found, install it
+        console.log('  UV Python not found, installing...');
+        await execAsync('uv python install 3.13', {
+          timeout: 300000,
+        });
+        console.log('  UV Python installed');
+        
+        // Try again
+        const uvPythonDir = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
+        const dirs = await fs.readdir(uvPythonDir);
+        const python313Dir = dirs.find(d => d.includes('cpython-3.1'));
+        if (python313Dir) {
+          const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+          python = path.join(uvPythonDir, python313Dir, binDir, 'python3.13');
+          await fs.access(python);
+          pass(`Installed and found UV Python: ${python}`);
+        } else {
+          throw new Error('Failed to install UV Python');
+        }
       }
     } catch (err) {
-      fail('Failed to find Python', err);
+      fail('Failed to find/install Python', err);
       return false;
     }
     console.log();

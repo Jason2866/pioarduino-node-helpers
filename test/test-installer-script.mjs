@@ -79,31 +79,47 @@ async function runTests() {
     }
     console.log();
 
-    // Test 3: Find Python (use system Python or UV Python)
+    // Test 3: Find Python (using the same logic as installPortablePython)
     console.log('Test 3: Finding Python...');
     let python;
     try {
-      // Try to find UV-managed Python first
+      // This replicates the logic from installPortablePython
+      // First try UV Python
       try {
         const uvPythonDir = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
         const dirs = await fs.readdir(uvPythonDir);
-        const python313Dir = dirs.find(d => d.includes('cpython-3.13'));
+        const python313Dir = dirs.find(d => d.includes('cpython-3.1'));
         if (python313Dir) {
           const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
           python = path.join(uvPythonDir, python313Dir, binDir, 'python3.13');
           await fs.access(python);
           pass(`Found UV Python: ${python}`);
         } else {
-          throw new Error('UV Python 3.13 not found');
+          throw new Error('UV Python not found');
         }
       } catch {
-        // Fall back to system Python
-        const { stdout } = await execAsync('which python3');
-        python = stdout.trim();
-        pass(`Using system Python: ${python}`);
+        // If UV Python not found, install it
+        console.log('  UV Python not found, installing...');
+        const { stdout } = await execAsync('uv python install 3.13', {
+          timeout: 300000,
+        });
+        console.log('  UV Python installed');
+        
+        // Try again
+        const uvPythonDir = path.join(os.homedir(), '.local', 'share', 'uv', 'python');
+        const dirs = await fs.readdir(uvPythonDir);
+        const python313Dir = dirs.find(d => d.includes('cpython-3.1'));
+        if (python313Dir) {
+          const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+          python = path.join(uvPythonDir, python313Dir, binDir, 'python3.13');
+          await fs.access(python);
+          pass(`Installed and found UV Python: ${python}`);
+        } else {
+          throw new Error('Failed to install UV Python');
+        }
       }
     } catch (err) {
-      fail('Failed to find Python', err);
+      fail('Failed to find/install Python', err);
       return false;
     }
     console.log();

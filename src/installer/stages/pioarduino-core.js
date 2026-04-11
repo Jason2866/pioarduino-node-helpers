@@ -392,9 +392,7 @@ export default class pioarduinoCoreStage extends BaseStage {
     } while (status !== this.params.pythonPrompt.STATUS_ABORT);
 
     this.status = BaseStage.STATUS_FAILED;
-    throw new Error(
-      'Can not find Python Interpreter. Please install Python 3.13',
-    );
+    throw new Error('Can not find Python Interpreter. Please install Python 3.13');
   }
 
   async install(withProgress = undefined) {

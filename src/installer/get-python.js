@@ -495,6 +495,20 @@ export async function createVenvWithUv(uvExe, penvDir, pythonSpec = null) {
         throw new Error(`Could not install uv into penv: ${uvInstallErr.message}`);
       }
 
+      // Install pip into the venv for compatibility with older PlatformIO versions.
+      // Use the venv's own uv binary. Failure is non-fatal.
+      try {
+        const venvUv = path.join(penvDir, BIN_DIR, UV_EXE);
+        await execFile(
+          venvUv,
+          ['pip', 'install', 'pip>=24.3', `--python=${expectedPython}`],
+          { timeout: 120000 },
+        );
+        log('info', 'pip installed into penv via venv uv for compatibility');
+      } catch (pipInstallErr) {
+        log('warn', `Could not install pip into penv (non-fatal): ${pipInstallErr.message}`);
+      }
+
       return penvDir;
     }
 

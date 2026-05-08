@@ -24,7 +24,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   resolveUV,
@@ -48,7 +48,7 @@ const execFileAsync = promisify(execFile);
 const distPath = path.join(__dirname, '..', 'dist', 'index.js');
 let createVenvWithUv, ensurePipInPenv;
 try {
-  const mod = await import(`file://${distPath}`);
+  const mod = await import(pathToFileURL(distPath).href);
   // UMD bundle exposes named exports under `default` when imported as ESM
   const dist = mod.default || mod;
   createVenvWithUv = dist.installer?.createVenvWithUv;

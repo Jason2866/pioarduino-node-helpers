@@ -14,6 +14,9 @@
  *   - penv Python path           (getPythonExecutablePath)
  *   - Cache cleanup              (moveUvToPenv)
  *   - Full pipeline              (installPortablePython)
+ *
+ * Production functions are imported from dist/index.js (get-python.js uses
+ * webpack-specific require() calls and cannot be imported directly as ESM).
  */
 
 import { exec, execFile } from 'node:child_process';
@@ -21,6 +24,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import {
   resolveUV,
@@ -34,8 +38,27 @@ import {
   getUVPenvPath,
 } from './uv-helper.mjs';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+// ── load production functions from built dist ─────────────────────────────────
+const distPath = path.join(__dirname, '..', 'dist', 'index.js');
+let createVenvWithUv, ensurePipInPenv;
+try {
+  const mod = await import(`file://${distPath}`);
+  // UMD bundle exposes named exports under `default` when imported as ESM
+  const dist = mod.default || mod;
+  createVenvWithUv = dist.installer?.createVenvWithUv;
+  ensurePipInPenv = dist.installer?.ensurePipInPenv;
+  if (!createVenvWithUv || !ensurePipInPenv) throw new Error('functions not found in installer export');
+} catch (err) {
+  console.error(`Cannot load dist/index.js: ${err.message}`);
+  console.error('Run `npm run build` first.');
+  process.exit(1);
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -147,123 +170,74 @@ async function testCreateVenvWithUv() {
   // Remove any leftover temp penv from a previous run
   fs.rmSync(TEMP_PENV, { recursive: true, force: true });
 
-  // ── 2a: Create the venv ─────────────────────────────────────────────────
-  console.log('  Creating venv with Python 3.13…');
+  // Call the production function directly
+  console.log('  Calling createVenvWithUv(bootstrapUv, TEMP_PENV)…');
+  let result;
   try {
-    await execFileAsync(
-      bootstrapUv,
-      ['venv', TEMP_PENV, '--python', '3.13', '--python-preference', 'managed'],
-      { timeout: 900000 },
-    );
-    const expectedPython = path.join(TEMP_PENV, BIN_DIR, PYTHON_EXE);
-    fs.accessSync(expectedPython);
-    const version = await getVersion(expectedPython);
-    pass(`Venv created — ${version}`);
+    result = await createVenvWithUv(bootstrapUv, TEMP_PENV);
   } catch (err) {
-    fail('Failed to create venv', err);
-    return; // remaining sub-tests depend on the venv
-  }
-
-  const venvPython = path.join(TEMP_PENV, BIN_DIR, PYTHON_EXE);
-
-  // ── 2b: Install uv into venv (mirrors createVenvWithUv production code) ──
-  console.log('  Installing uv into venv…');
-  try {
-    await execFileAsync(
-      bootstrapUv,
-      ['pip', 'install', 'uv>=0.1.0', `--python=${venvPython}`],
-      { timeout: 120000 },
-    );
-    const venvUv = path.join(TEMP_PENV, BIN_DIR, UV_EXE);
-    fs.accessSync(venvUv);
-    const version = await getVersion(venvUv);
-    pass(`uv installed in venv: ${version}`);
-  } catch (err) {
-    fail('Failed to install uv into venv', err);
+    fail('createVenvWithUv threw unexpectedly', err);
     return;
   }
 
-  const venvUv = path.join(TEMP_PENV, BIN_DIR, UV_EXE);
-
-  // ── 2c: Install pip into venv via venv-uv (the new compat step) ─────────
-  console.log('  Installing pip into venv via venv-uv (compat step)…');
-  try {
-    await execFileAsync(
-      venvUv,
-      ['pip', 'install', 'pip>=24.3', `--python=${venvPython}`],
-      { timeout: 120000 },
-    );
-    pass('pip install command succeeded');
-  } catch (err) {
-    // Non-fatal in production — but we still record the failure in tests
-    fail('pip install into venv failed', err);
+  if (!result) {
+    fail('createVenvWithUv returned null (venv creation failed)');
+    return;
   }
+  pass(`createVenvWithUv returned penvDir: ${result}`);
 
-  // ── 2d: Verify pip binary exists in venv ────────────────────────────────
-  const pipExe = path.join(TEMP_PENV, BIN_DIR, IS_WINDOWS ? 'pip.exe' : 'pip');
+  const venvPython = path.join(TEMP_PENV, BIN_DIR, PYTHON_EXE);
+  const venvUv     = path.join(TEMP_PENV, BIN_DIR, UV_EXE);
+  const pipExe     = path.join(TEMP_PENV, BIN_DIR, IS_WINDOWS ? 'pip.exe' : 'pip');
+
+  // ── Python present and is 3.13 ───────────────────────────────────────────
   try {
-    fs.accessSync(pipExe);
-    pass(`pip binary present at ${pipExe}`);
-  } catch {
-    // pip might be pip3 on some systems
-    const pip3Exe = path.join(TEMP_PENV, BIN_DIR, IS_WINDOWS ? 'pip3.exe' : 'pip3');
-    try {
-      fs.accessSync(pip3Exe);
-      pass(`pip3 binary present at ${pip3Exe}`);
-    } catch (err) {
-      fail('pip binary not found in venv', err);
+    const { stdout } = await execFileAsync(venvPython,
+      ['-c', 'import sys; print(sys.version_info[:2])'], { timeout: 10000 });
+    const m = stdout.match(/\((\d+),\s*(\d+)/);
+    if (m && parseInt(m[1], 10) === 3 && parseInt(m[2], 10) === 13) {
+      pass(`Python 3.13 in venv: ${stdout.trim()}`);
+    } else {
+      fail(`Unexpected Python version: ${stdout.trim()}`);
     }
+  } catch (err) {
+    fail('Python version check failed', err);
   }
 
-  // ── 2e: Verify pip version >= 24.3 ───────────────────────────────────────
-  console.log('  Checking pip version…');
+  // ── uv binary installed by createVenvWithUv ──────────────────────────────
   try {
-    const pipBin = fs.existsSync(pipExe)
-      ? pipExe
-      : path.join(TEMP_PENV, BIN_DIR, IS_WINDOWS ? 'pip3.exe' : 'pip3');
-    const raw = await getVersion(pipBin);
+    fs.accessSync(venvUv);
+    const v = await getVersion(venvUv);
+    pass(`uv in venv: ${v}`);
+  } catch (err) {
+    fail('uv not installed in venv by createVenvWithUv', err);
+  }
+
+  // ── pip installed (compat step) and importable ───────────────────────────
+  try {
+    const { stdout } = await execFileAsync(venvPython,
+      ['-c', 'import pip; print(pip.__version__)'], { timeout: 10000 });
+    pass(`pip importable from venv Python (version ${stdout.trim()})`);
+  } catch (err) {
+    fail('pip not importable from venv Python after createVenvWithUv', err);
+  }
+
+  // ── pip version >= 24.3 ───────────────────────────────────────────────────
+  const resolvedPip = fs.existsSync(pipExe)
+    ? pipExe
+    : path.join(TEMP_PENV, BIN_DIR, IS_WINDOWS ? 'pip3.exe' : 'pip3');
+  try {
+    const raw = await getVersion(resolvedPip);
     const parts = parseVersion(raw);
     if (!parts) throw new Error(`Cannot parse version from: ${raw}`);
-    const [major, minor] = parts;
-    const ok = major > 24 || (major === 24 && minor >= 3);
+    const ok = parts[0] > 24 || (parts[0] === 24 && parts[1] >= 3);
     if (ok) {
       pass(`pip version ${raw} satisfies >=24.3`);
     } else {
       fail(`pip version ${raw} does NOT satisfy >=24.3`);
     }
   } catch (err) {
-    fail('Could not determine pip version', err);
-  }
-
-  // ── 2f: Verify pip is importable from venv Python ───────────────────────
-  console.log('  Verifying pip is importable from venv Python…');
-  try {
-    const { stdout } = await execFileAsync(
-      venvPython,
-      ['-c', 'import pip; print(pip.__version__)'],
-      { timeout: 10000 },
-    );
-    pass(`pip importable from venv Python (version ${stdout.trim()})`);
-  } catch (err) {
-    fail('pip not importable from venv Python', err);
-  }
-
-  // ── 2g: Verify Python 3.13 is in the venv ───────────────────────────────
-  console.log('  Verifying Python version in venv…');
-  try {
-    const { stdout } = await execFileAsync(
-      venvPython,
-      ['-c', 'import sys; print(sys.version_info[:2])'],
-      { timeout: 10000 },
-    );
-    const m = stdout.match(/\((\d+),\s*(\d+)/);
-    if (m && parseInt(m[1], 10) === 3 && parseInt(m[2], 10) === 13) {
-      pass(`Python 3.13 confirmed in venv: ${stdout.trim()}`);
-    } else {
-      fail(`Unexpected Python version in venv: ${stdout.trim()}`);
-    }
-  } catch (err) {
-    fail('Python version check failed', err);
+    fail('pip version check failed', err);
   }
 }
 
@@ -420,47 +394,31 @@ async function testInstallPortablePython() {
       fail('Real penv uv not functional', err);
     }
 
-    // ── 6c: pip — ensure installed first (mirrors installer check() behaviour) ──
-    // The installer calls ensurePipInPenv() during check() which installs pip when
-    // missing or broken. We replicate that here so the test is self-contained.
-    console.log('  Ensuring pip is installed in real penv (ensurePipInPenv)…');
-    let pipImportOk = false;
+    // ── 6c: pip — call production ensurePipInPenv then verify ────────────
+    console.log('  Calling ensurePipInPenv(penvDir)…');
     try {
-      await execFileAsync(penvPython, ['-c', 'import pip'], { timeout: 5000 });
-      pipImportOk = true;
-    } catch {
-      // pip missing or broken — install via venv uv
-      try {
-        await execFileAsync(
-          penvUv,
-          ['pip', 'install', 'pip>=24.3', `--python=${penvPython}`],
-          { timeout: 120000 },
-        );
-        pass('pip (re)installed into real penv via venv uv');
-        pipImportOk = true;
-      } catch (installErr) {
-        fail('Could not install pip into real penv', installErr);
-      }
+      await ensurePipInPenv(penvDir);
+      pass('ensurePipInPenv completed without error');
+    } catch (err) {
+      fail('ensurePipInPenv threw unexpectedly', err);
     }
 
-    if (pipImportOk) {
-      // Verify pip version via python -m pip (works regardless of binary state)
-      try {
-        const { stdout } = await execFileAsync(
-          penvPython,
-          ['-m', 'pip', '--version'],
-          { timeout: 10000 },
-        );
-        const parts = parseVersion(stdout);
-        const ok = parts && (parts[0] > 24 || (parts[0] === 24 && parts[1] >= 3));
-        if (ok) {
-          pass(`Real penv pip: ${stdout.trim()} (satisfies >=24.3)`);
-        } else {
-          fail(`Real penv pip does NOT satisfy >=24.3: ${stdout.trim()}`);
-        }
-      } catch (err) {
-        fail('pip version check via python -m pip failed', err);
+    // Verify pip is importable and version satisfies >=24.3
+    try {
+      const { stdout } = await execFileAsync(
+        penvPython,
+        ['-m', 'pip', '--version'],
+        { timeout: 10000 },
+      );
+      const parts = parseVersion(stdout);
+      const ok = parts && (parts[0] > 24 || (parts[0] === 24 && parts[1] >= 3));
+      if (ok) {
+        pass(`Real penv pip: ${stdout.trim()} (satisfies >=24.3)`);
+      } else {
+        fail(`Real penv pip does NOT satisfy >=24.3: ${stdout.trim()}`);
       }
+    } catch (err) {
+      fail('pip version check via python -m pip failed', err);
     }
   } else {
     pass('Real penv not present — installPortablePython would create it on first run (not triggered by this test to avoid side-effects)');

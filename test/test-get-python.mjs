@@ -420,37 +420,46 @@ async function testInstallPortablePython() {
       fail('Real penv uv not functional', err);
     }
 
-    // ── 6c: pip ──────────────────────────────────────────────────────────
-    const pipExe = path.join(penvDir, BIN_DIR, IS_WINDOWS ? 'pip.exe' : 'pip');
-    const pip3Exe = path.join(penvDir, BIN_DIR, IS_WINDOWS ? 'pip3.exe' : 'pip3');
-    const resolvedPip = fs.existsSync(pipExe) ? pipExe
-      : fs.existsSync(pip3Exe) ? pip3Exe : null;
-
-    if (resolvedPip) {
+    // ── 6c: pip — ensure installed first (mirrors installer check() behaviour) ──
+    // The installer calls ensurePipInPenv() during check() which installs pip when
+    // missing or broken. We replicate that here so the test is self-contained.
+    console.log('  Ensuring pip is installed in real penv (ensurePipInPenv)…');
+    let pipImportOk = false;
+    try {
+      await execFileAsync(penvPython, ['-c', 'import pip'], { timeout: 5000 });
+      pipImportOk = true;
+    } catch {
+      // pip missing or broken — install via venv uv
       try {
-        const raw = await getVersion(resolvedPip);
-        const parts = parseVersion(raw);
-        const ok = parts && (parts[0] > 24 || (parts[0] === 24 && parts[1] >= 3));
-        if (ok) {
-          pass(`Real penv pip: ${raw} (satisfies >=24.3)`);
-        } else {
-          fail(`Real penv pip ${raw} does NOT satisfy >=24.3`);
-        }
-      } catch (err) {
-        fail('Real penv pip version check failed', err);
+        await execFileAsync(
+          penvUv,
+          ['pip', 'install', 'pip>=24.3', `--python=${penvPython}`],
+          { timeout: 120000 },
+        );
+        pass('pip (re)installed into real penv via venv uv');
+        pipImportOk = true;
+      } catch (installErr) {
+        fail('Could not install pip into real penv', installErr);
       }
-    } else {
-      // pip may be installed as a module but not a standalone binary in all envs
-      console.log('  pip binary not found as standalone — checking via python -m pip…');
+    }
+
+    if (pipImportOk) {
+      // Verify pip version via python -m pip (works regardless of binary state)
       try {
         const { stdout } = await execFileAsync(
           penvPython,
           ['-m', 'pip', '--version'],
           { timeout: 10000 },
         );
-        pass(`Real penv pip via python -m pip: ${stdout.trim()}`);
+        const parts = parseVersion(stdout);
+        const ok = parts && (parts[0] > 24 || (parts[0] === 24 && parts[1] >= 3));
+        if (ok) {
+          pass(`Real penv pip: ${stdout.trim()} (satisfies >=24.3)`);
+        } else {
+          fail(`Real penv pip does NOT satisfy >=24.3: ${stdout.trim()}`);
+        }
       } catch (err) {
-        fail('pip not available in real penv', err);
+        fail('pip version check via python -m pip failed', err);
       }
     }
   } else {
